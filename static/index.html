@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>iptables – mapa pravidiel</title>
+<title>iptables / nft – mapa pravidiel</title>
 <style>
 :root {
   --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
@@ -85,6 +85,8 @@ button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 .seg button:last-child { border-radius: 0 6px 6px 0; }
 .seg button.on { background: var(--jump); color: var(--onaccent); border-color: var(--jump); position: relative; }
 .dimtxt { color: var(--dim); }
+.cname { min-width: 0; }
+.meta { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 11px; }
 @keyframes bump { from { background: color-mix(in srgb, var(--c) 60%, transparent); } }
 .rule.bump { animation: bump 1.4s ease-out; }
 @media (prefers-reduced-motion: reduce) { .rule.bump { animation: none; } }
@@ -145,8 +147,9 @@ body.drag #viewport { outline: 3px dashed var(--jump); outline-offset: -8px; }
 <div id="viewport">
   <div id="empty">
     <p><b>Zatiaľ nič nie je načítané.</b></p>
-    <p>Presuň sem súbor z <code>iptables-save</code>, vlož text (Ctrl+V) alebo použi „Otvoriť súbor…“.<br>
-    Server automaticky načíta <code>/data/iptables.rules</code>, ak existuje.</p>
+    <p>Presuň sem výstup z <code>iptables-save</code> alebo <code>nft list ruleset</code>, vlož text (Ctrl+V)
+    alebo použi „Otvoriť súbor…“. Formát sa rozpozná automaticky.<br>
+    Server automaticky načíta <code>/data/iptables.rules</code> alebo <code>/data/nftables.rules</code>, ak existuje.</p>
   </div>
   <div id="stage"><div id="canvas"></div></div>
 </div>

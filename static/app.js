@@ -3,7 +3,7 @@ const $ = s => document.querySelector(s);
 const SVGNS = 'http://www.w3.org/2000/svg';
 
 const W0 = 480, GAPX = 170, GAPY = 22, PADX = 30, PADY = 28, HEAD = 36;
-const CANON = ['PREROUTING', 'INPUT', 'FORWARD', 'OUTPUT', 'POSTROUTING'];
+const HOOKS = ['ingress', 'prerouting', 'input', 'forward', 'output', 'postrouting', 'egress'];
 const LEGEND = [
   ['accept', 'ACCEPT'], ['drop', 'DROP'], ['reject', 'REJECT'],
   ['snat', 'SNAT / MASQUERADE'], ['dnat', 'DNAT / REDIRECT'], ['mark', 'MARK / CONNMARK'],
@@ -21,7 +21,7 @@ const fmt = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'G' : n >= 1e6 ? (n / 1e6).to
 const isHidden = el => el.classList.contains('hide');
 
 /* ---------- načítanie ---------- */
-let source = null, lastText = '', refreshTimer = null, refreshing = false, cmode = '';
+let source = null, lastText = '', refreshTimer = null, refreshing = false, cmode = '', FORMAT = 'iptables';
 const darkMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : { matches: true };
 if (darkMq.addEventListener) darkMq.addEventListener('change', () => DATA && drawEdges());
 
@@ -54,13 +54,17 @@ function updateRefreshUi() {
 }
 
 function load(text, label, src = 'local') {
-  const parsed = parseIptablesSave(text);
+  const parsed = parseRuleset(text);
   const names = Object.keys(parsed);
-  if (!names.length) { alert('V texte som nenašiel žiadnu tabuľku (riadok začínajúci *filter, *nat …).'); return; }
+  if (!names.length) {
+    alert('V texte som nenašiel žiadnu tabuľku.\nOčakávam výstup `iptables-save` (riadok *filter …) alebo `nft list ruleset` (table inet filter { …).');
+    return;
+  }
   DATA = parsed;
+  FORMAT = detectFormat(text);
   source = src;
-  if (!DATA[cur]) cur = DATA.filter ? 'filter' : names[0];
-  $('#src').textContent = label || '';
+  if (!DATA[cur]) cur = names.find(n => n === 'filter' || n.endsWith(' filter')) || names[0];
+  $('#src').textContent = (label || '') + ' · ' + FORMAT;
   $('#empty').style.display = 'none';
   updateRefreshUi();
   updateCountersUi();
@@ -104,11 +108,11 @@ async function loadFromServer(auto = false) {
     if (auto && DATA && source === 'server') {
       if (text !== lastText) {
         lastText = text;
-        const nd = parseIptablesSave(text);
+        const nd = parseRuleset(text);
         if (sigOf(nd) === sigOf(DATA)) updateCounters(nd);
         else load(text, label, 'server');     // zmenili sa samotné pravidlá -> prekresli
       }
-      $('#src').textContent = label;
+      $('#src').textContent = label + ' · ' + FORMAT;
       return true;
     }
     lastText = text;
@@ -125,7 +129,7 @@ function buildTabs() {
   const tabs = $('#tabs');
   tabs.innerHTML = '';
   const order = ['filter', 'nat', 'mangle', 'raw', 'security'];
-  const rank = n => (order.indexOf(n) + 99) % 99;
+  const rank = n => (order.indexOf(n.split(' ').pop()) + 99) % 99;
   for (const n of Object.keys(DATA).sort((a, b) => rank(a) - rank(b))) {
     const rules = Object.values(DATA[n].chains).reduce((s, c) => s + c.rules.length, 0);
     const b = document.createElement('button');
@@ -155,13 +159,13 @@ function buildLegend() {
 /* ---------- vykreslenie ---------- */
 function ruleHtml(r) {
   const tag = r.kind === 'jump' ? (r.isGoto ? '⇒ ' : '→ ') + r.target : (r.target || '·');
-  let m = esc(r.match).replace(/-m comment --comment (&quot;.*?&quot;|\S+)/g,
+  let m = esc(r.match).replace(/(?:-m comment --comment|\bcomment) (&quot;.*?&quot;|\S+)/g,
     (_, c) => `<span class="cmt"># ${c.replace(/^&quot;|&quot;$/g, '')}</span>`);
   if (!r.match) m = '<span class="all">(všetky pakety)</span>';
   const args = r.args ? ` <span class="args">⟶ ${esc(r.args)}</span>` : '';
   const cnt = r.counters ? `<span class="cnt" title="${cntTitle(r.counters, 0)}">${fmt(r.counters.pkts)}</span>` : '';
   const open = S().rule[r.chain + '#' + r.idx] ? ' open' : '';
-  return `<div class="rule k-${r.kind}${open}" data-i="${r.idx}" title="${esc('-A ' + r.chain + ' ' + r.line)}">` +
+  return `<div class="rule k-${r.kind}${open}" data-i="${r.idx}" title="${esc((FORMAT === 'nft' ? '' : '-A ' + r.chain + ' ') + r.line)}">` +
     `<span class="tag">${esc(tag)}</span><span class="txt">${m}${args}</span>${cnt}</div>`;
 }
 
@@ -202,6 +206,7 @@ function render() {
     box.innerHTML =
       `<div class="chead" tabindex="0" role="button"><span class="chev">▾</span>` +
       `<span class="cname" title="${esc(name)}">${esc(name)}</span>${pol}` +
+      (c.meta ? `<span class="meta" title="${esc(c.meta)}">${esc(c.metaShort)}</span>` : '') +
       `<button class="wbtn bw" title="Roztiahnuť box na šírku – celé pravidlá na jeden riadok">⇔</button>` +
       `<button class="wbtn bt" title="Zalomiť dlhé pravidlá v tomto chaine">↵</button>` +
       `<span class="chips">${chipsHtml(c)}</span></div>` +
@@ -275,7 +280,12 @@ function relayout() {
     x += info.colW[ci] + GAPX;
   });
 
-  const tieBreak = n => { const i = CANON.indexOf(n); return t.chains[n].builtin ? (i < 0 ? 50 : i) : 100 + t.order.indexOf(n); };
+  const tieBreak = n => {
+    const c = t.chains[n];
+    if (!c.builtin) return 1e6 + t.order.indexOf(n);
+    const h = HOOKS.indexOf(c.hook);
+    return (h < 0 ? 50 : h) * 1e4 + (c.prio || 0);
+  };
   const top = {};
   let maxY = 0;
   cols.forEach((names, ci) => {
@@ -369,13 +379,13 @@ function drawEdges() {
     const sb = boxes[name];
     if (isHidden(sb)) continue;
     for (const r of t.chains[name].rules) {
-      if (!r.jumpTo) continue;
-      const tb = boxes[r.jumpTo];
+      for (const jt of r.jumpTos) {
+      const tb = boxes[jt];
       const ry = rowY(name, r.idx);
       if (isHidden(tb) || ry === null) continue;
       const x1 = sb.offsetLeft + sb.offsetWidth, y1 = sb.offsetTop + ry;
       const x2 = tb.offsetLeft, y2 = tb.offsetTop + HEAD / 2 + 1;
-      const s = info.colOf[name], tc = info.colOf[r.jumpTo];
+      const s = info.colOf[name], tc = info.colOf[jt];
       let d;
       if (route && tc > s) {
         const cx1 = gapX(s);
@@ -390,10 +400,10 @@ function drawEdges() {
         const dx = Math.max(40, Math.abs(x2 - x1) / 2);
         d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
       }
-      const col = colorOf[r.jumpTo];
+      const col = colorOf[jt];
       const g = document.createElementNS(SVGNS, 'g');
       g.setAttribute('class', 'edge');
-      g.dataset.from = name; g.dataset.to = r.jumpTo; g.dataset.idx = r.idx;
+      g.dataset.from = name; g.dataset.to = jt; g.dataset.idx = r.idx;
       const p = document.createElementNS(SVGNS, 'path');
       p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', col); p.setAttribute('stroke-width', 1.6);
       if (r.isGoto) p.setAttribute('stroke-dasharray', '6 4');
@@ -403,6 +413,7 @@ function drawEdges() {
       arr.setAttribute('points', `${x2},${y2} ${x2 - 9},${y2 - 5} ${x2 - 9},${y2 + 5}`); arr.setAttribute('fill', col);
       g.append(p, dot, arr);
       svg.appendChild(g);
+      }
     }
   }
 }
@@ -436,7 +447,7 @@ function applyFilters() {
       if (n in memo) return memo[n];
       memo[n] = false;
       const c = t.chains[n];
-      return (memo[n] = c.rules.some(r => pred(c, r) || (r.jumpTo && has(r.jumpTo))));
+      return (memo[n] = c.rules.some(r => pred(c, r) || r.jumpTos.some(x => has(x))));
     };
     return has;
   };
@@ -446,7 +457,7 @@ function applyFilters() {
     const c = t.chains[name], box = boxes[name];
     box.querySelectorAll('.rule').forEach((row, i) => {
       const r = c.rules[i];
-      const ctx = !!(r.jumpTo && hasP(r.jumpTo));
+      const ctx = r.jumpTos.some(x => hasP(x));
       row.classList.toggle('faded', textActive && !hideText && !tok(c, r));
       row.classList.toggle('hide', hideAny && !pass(c, r) && !ctx);
     });

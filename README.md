@@ -1,11 +1,12 @@
-# iptables-map
+# iptables-map (iptables aj nftables)
 
-Mapa pravidiel firewallu z `iptables-save`: každý chain je box, čiary vedú z pravidla (skok -j/-g)
+Mapa pravidiel firewallu z `iptables-save` alebo `nft list ruleset` (formát sa rozpozná automaticky): každý chain je box, čiary vedú z pravidla (skok -j/-g)
 do chainu, ktorý volá. Boxy sa zbaľujú klikom na hlavičku.
 
 ## Spustenie
 
-    iptables-save -c > rules/iptables.rules      # -c pridá počítadlá paketov
+    iptables-save -c > rules/iptables.rules      # iptables (-c pridá počítadlá paketov)
+    nft list ruleset > rules/nftables.rules      # alebo nftables
     docker compose up -d --build     # po zmene súborov v static/ stačí obnoviť stránku (je mountnuté)
     # http://localhost:8080
 
@@ -37,6 +38,20 @@ Legenda hore je klikateľná (zvýrazní len daný typ pravidiel).
   na mieste a pravidlá, kde pribudli pakety, krátko zablikajú (tooltip na čísle ukáže prírastok).
   Funguje len pre súbor zo servera, nie pre ručne otvorený/vložený text.
 - ip6tables: stačí podstrčiť export z ip6tables-save
+
+## nftables
+- Server načíta prvý existujúci súbor z: `iptables.rules`, `nftables.rules`, `nft.rules`, `ruleset.nft`
+  (alebo cestu z premennej `RULES_FILE`). Ukážka: `samples/nftables.rules`.
+- Tabuľky sa volajú `<family> <name>` (napr. `inet filter`, `ip nat`); base chainy majú v hlavičke hook a prioritu
+  a sú v prvom stĺpci zoradené podľa hooku (prerouting, input, forward, output, postrouting) a priority.
+- Podporené: `jump`, `goto`, `vmap { ... : jump x }` (jedno pravidlo = viac čiar), accept/drop/reject/return,
+  snat/dnat/masquerade/redirect/tproxy, `meta mark set`/`ct mark set`/`ip dscp set`, `log`, `comment "..."`.
+- **Počítadlá**: nft ich vypisuje len pri pravidlách s `counter` (napr. `tcp dport 22 counter accept`).
+  Pravidlá bez `counter` nemajú čo obnovovať a filter `≠ 0` / `= 0` ich nezobrazí.
+- Na systémoch s `iptables-nft` (iptables ako vrstva nad nft) použi radšej `iptables-save`; `nft list ruleset`
+  tam obsahuje nečitateľné `xt` rozšírenia.
+- Obmedzenia: obsah `set`/`map` sa nezobrazuje (pravidlá na ne odkazujú ako `@meno`); konfig s `define`/`include`
+  nie je podporený – použi výstup `nft list ruleset`; JSON výstup (`nft -j`) nie je podporený.
 
 
 ## Sample screenshot
