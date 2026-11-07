@@ -1,0 +1,73 @@
+# Ukážkový export (iptables-save -c)
+*mangle
+:PREROUTING ACCEPT [1200:98000]
+:INPUT ACCEPT [800:60000]
+:FORWARD ACCEPT [400:38000]
+:OUTPUT ACCEPT [700:50000]
+:POSTROUTING ACCEPT [1100:88000]
+:MARK-WAN - [0:0]
+[40:3200] -A PREROUTING -i eth0 -j MARK-WAN
+[40:3200] -A MARK-WAN -p tcp -m multiport --dports 80,443 -j MARK --set-xmark 0x10/0xffffffff
+[0:0] -A MARK-WAN -p udp --dport 53 -j CONNMARK --set-xmark 0x20/0xffffffff
+COMMIT
+*nat
+:PREROUTING ACCEPT [30:2000]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [5:300]
+:POSTROUTING ACCEPT [12:800]
+:DOCKER - [0:0]
+:PORTFWD - [0:0]
+[20:1200] -A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
+[10:800] -A PREROUTING -i eth0 -j PORTFWD
+[0:0] -A OUTPUT ! -d 127.0.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER
+[9:600] -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE
+[3:200] -A POSTROUTING -s 10.0.0.0/24 -o eth0 -j SNAT --to-source 203.0.113.10
+[0:0] -A DOCKER -i docker0 -j RETURN
+[4:240] -A DOCKER ! -i docker0 -p tcp -m tcp --dport 8080 -j DNAT --to-destination 172.17.0.2:80
+[6:360] -A PORTFWD -p tcp -m tcp --dport 2222 -m comment --comment "ssh na bastion" -j DNAT --to-destination 10.0.0.5:22
+[0:0] -A PORTFWD -p tcp -m tcp --dport 3306 -j REDIRECT --to-ports 13306
+COMMIT
+*filter
+:INPUT DROP [15:900]
+:FORWARD DROP [2:120]
+:OUTPUT ACCEPT [700:50000]
+:DOCKER - [0:0]
+:DOCKER-USER - [0:0]
+:DOCKER-ISOLATION - [0:0]
+:SSH-IN - [0:0]
+:ICMP-IN - [0:0]
+:BLOCKLIST - [0:0]
+:LOGDROP - [0:0]
+:OLD-UNUSED - [0:0]
+[700:50000] -A INPUT -i lo -j ACCEPT
+[600:45000] -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+[10:600] -A INPUT -m conntrack --ctstate INVALID -j DROP
+[50:3000] -A INPUT -j BLOCKLIST
+[20:1200] -A INPUT -p tcp -m tcp --dport 22 -j SSH-IN
+[5:420] -A INPUT -p icmp -j ICMP-IN
+[30:2000] -A INPUT -p tcp -m multiport --dports 80,443 -m comment --comment "web" -j ACCEPT
+[3:180] -A INPUT -p tcp -m tcp --dport 25 -j REJECT --reject-with tcp-reset
+[2:120] -A INPUT -p udp --dport 161 -j REJECT --reject-with icmp-port-unreachable
+[15:900] -A INPUT -j LOGDROP
+[400:38000] -A FORWARD -j DOCKER-USER
+[400:38000] -A FORWARD -j DOCKER-ISOLATION
+[300:30000] -A FORWARD -o docker0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+[40:2400] -A FORWARD -o docker0 -j DOCKER
+[0:0] -A FORWARD -i docker0 ! -o docker0 -j ACCEPT
+[400:38000] -A DOCKER-USER -j RETURN
+[0:0] -A DOCKER-ISOLATION -i docker0 -o br-1234 -j DROP
+[0:0] -A DOCKER-ISOLATION -j RETURN
+[40:2400] -A DOCKER ! -i docker0 -o docker0 -p tcp -m tcp --dport 80 -d 172.17.0.2/32 -j ACCEPT
+[5:300] -A SSH-IN -s 192.168.1.0/24 -j ACCEPT
+[3:180] -A SSH-IN -s 10.0.0.0/24 -m comment --comment "VPN" -j ACCEPT
+[2:120] -A SSH-IN -m recent --set --name SSH
+[2:120] -A SSH-IN -m recent --update --seconds 60 --hitcount 4 --name SSH -j BLOCKLIST
+[10:600] -A SSH-IN -j LOGDROP
+[5:420] -A ICMP-IN -p icmp -m icmp --icmp-type 8 -m limit --limit 5/sec -j ACCEPT
+[0:0] -A ICMP-IN -j DROP
+[50:3000] -A BLOCKLIST -s 198.51.100.0/24 -j DROP
+[0:0] -A BLOCKLIST -s 203.0.113.99/32 -j LOGDROP
+[0:0] -A LOGDROP -m limit --limit 5/min -j LOG --log-prefix "FW-DROP: " --log-level 4
+[0:0] -A LOGDROP -j DROP
+[0:0] -A OLD-UNUSED -j ACCEPT
+COMMIT
