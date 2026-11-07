@@ -37,3 +37,7 @@ Legenda hore je klikateľná (zvýrazní len daný typ pravidiel).
   na mieste a pravidlá, kde pribudli pakety, krátko zablikajú (tooltip na čísle ukáže prírastok).
   Funguje len pre súbor zo servera, nie pre ručne otvorený/vložený text.
 - ip6tables: stačí podstrčiť export z ip6tables-save
+
+
+## Sample screenshot
+![Sample screenshot](/img/screenshot.png)
