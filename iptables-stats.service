@@ -1,0 +1,11 @@
+[Unit]
+Description=write iptables rules
+
+[Service]
+ExecStart=/DOCKERS/iptables-stats/iptables-stats.sh
+User=root
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

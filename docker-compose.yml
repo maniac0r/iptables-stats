@@ -1,0 +1,12 @@
+services:
+  iptables-map:
+    build: .
+    container_name: iptables-stats
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+#      - ./rules:/data:ro          # sem ulož: iptables-save -c > rules/iptables.rules
+#      - /dev/shm/iptables.rules:/data/iptables.rules:ro
+      - /dev/shm/iptables-stats:/data:ro
+      - ./static:/app/static:ro   # úpravy UI sa prejavia bez rebuildu image

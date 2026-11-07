@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>iptables – mapa pravidiel</title>
+<style>
+:root {
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --line:#30363d; --text:#e6edf3; --dim:#8b949e;
+  --accept:#2ea043; --drop:#e5484d; --reject:#f59e0b; --snat:#a855f7; --dnat:#3b82f6;
+  --mark:#ec4899; --return:#8b949e; --log:#eab308; --jump:#38bdf8; --other:#14b8a6; --none:#6e7681;
+  --rowline:#21262d; --builtin:#58a6ff; --onaccent:#04121a; --cmt:#7ee787; --shadow:#0006;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:#f3f4f6; --panel:#ffffff; --panel2:#eef1f4; --line:#d0d7de; --text:#1f2328; --dim:#59636e;
+    --accept:#1a7f37; --drop:#cf222e; --reject:#bc4c00; --snat:#8250df; --dnat:#0969da;
+    --mark:#bf3989; --return:#6e7781; --log:#9a6700; --jump:#0b7285; --other:#0f766e; --none:#8c959f;
+    --rowline:#e5e9ee; --builtin:#0969da; --onaccent:#ffffff; --cmt:#116329; --shadow:#1f232814;
+    color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; }
+button, input, select { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--dim); }
+button:focus-visible, input:focus-visible, .chead:focus-visible { outline: 2px solid var(--jump); outline-offset: 1px; }
+input[type=search] { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: 200px; }
+
+#bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#tabs { display: flex; gap: 4px; }
+#tabs button.on { background: var(--jump); color: var(--onaccent); border-color: var(--jump); font-weight: 600; }
+.sep { width: 1px; align-self: stretch; background: var(--line); }
+#src { color: var(--dim); margin-left: auto; font-size: 12px; }
+label.chk { display: inline-flex; gap: 5px; align-items: center; color: var(--dim); cursor: pointer; }
+
+#legend { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+#legend button { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 99px; font-size: 12px; }
+#legend button i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+#legend button.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 22%, var(--panel2)); }
+
+#viewport { flex: 1; overflow: auto; position: relative; }
+#stage { position: relative; }
+#canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#edges { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; overflow: visible; }
+#edges .edge { opacity: .5; transition: opacity .12s; }
+#edges.has-hot .edge { opacity: .08; }
+#edges .edge.hot { opacity: 1; }
+#edges .edge.hot path { stroke-width: 2.6; }
+
+.chain { position: absolute; z-index: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 10px var(--shadow); }
+.chain.builtin { border-color: var(--builtin); }
+.chain.orphan { border-style: dashed; }
+.chain.faded { opacity: .3; }
+.chead { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 36px; cursor: pointer; user-select: none; }
+.chev { flex: none; width: 10px; color: var(--dim); transition: transform .12s; }
+.collapsed .chev { transform: rotate(-90deg); }
+.cname { font: 600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pol { flex: none; font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--c); color: var(--c); }
+.chips { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.chip { font-size: 11px; padding: 0 6px; border-radius: 99px; color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); border: 1px solid color-mix(in srgb, var(--c) 60%, transparent); }
+.rules { border-top: 1px solid var(--line); }
+.collapsed .rules { display: none; }
+.collapsed .chead { border-radius: 8px; }
+.rule { display: flex; gap: 8px; align-items: flex-start; padding: 3px 10px 3px 8px; border-left: 4px solid var(--c); border-bottom: 1px solid var(--rowline); background: color-mix(in srgb, var(--c) 8%, transparent); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.rule:last-child { border-bottom: 0; border-radius: 0 0 7px 0; }
+.rule:hover { background: color-mix(in srgb, var(--c) 20%, transparent); }
+.rule.faded { opacity: .25; }
+.tag { flex: none; font-weight: 700; color: var(--c); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrap .txt, .wrapbox .txt, .rule.open .txt { white-space: normal; word-break: break-all; }
+.rule { cursor: pointer; }
+.rule.open { background: color-mix(in srgb, var(--c) 18%, transparent); }
+.rule.open .tag, .wrapbox .tag, .wrap .tag { max-width: none; }
+.wbtn { flex: none; padding: 0 6px; line-height: 20px; font-size: 13px; color: var(--dim); background: transparent; }
+select { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; margin-left: -1px; padding: 4px 9px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button.on { background: var(--jump); color: var(--onaccent); border-color: var(--jump); position: relative; }
+.dimtxt { color: var(--dim); }
+@keyframes bump { from { background: color-mix(in srgb, var(--c) 60%, transparent); } }
+.rule.bump { animation: bump 1.4s ease-out; }
+@media (prefers-reduced-motion: reduce) { .rule.bump { animation: none; } }
+.wbtn.on { color: var(--jump); border-color: var(--jump); }
+.hide { display: none !important; }
+.chain.wide { width: max-content !important; max-width: 2400px; }
+#nomatch { position: absolute; left: 40px; top: 40px; color: var(--dim); }
+.args { color: var(--c); opacity: .9; }
+.all { color: var(--dim); font-style: italic; }
+.cmt { color: var(--cmt); }
+.cnt { flex: none; color: var(--dim); font-size: 11px; }
+.k-accept { --c: var(--accept); } .k-drop { --c: var(--drop); } .k-reject { --c: var(--reject); }
+.k-snat { --c: var(--snat); } .k-dnat { --c: var(--dnat); } .k-mark { --c: var(--mark); }
+.k-return { --c: var(--return); } .k-log { --c: var(--log); } .k-jump { --c: var(--jump); }
+.k-other { --c: var(--other); } .k-none { --c: var(--none); }
+
+#empty { margin: 14vh auto 0; max-width: 520px; text-align: center; color: var(--dim); line-height: 1.7; }
+#empty code { background: var(--panel2); padding: 2px 6px; border-radius: 4px; color: var(--text); }
+body.drag #viewport { outline: 3px dashed var(--jump); outline-offset: -8px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div id="tabs"></div>
+  <span class="sep"></span>
+  <button id="btnCollapse" title="Zbaliť všetky chainy">Zbaliť všetko</button>
+  <button id="btnExpand" title="Rozbaliť všetky chainy">Rozbaliť všetko</button>
+  <span class="sep"></span>
+  <button id="zOut" title="Oddialiť">−</button>
+  <button id="zFit" title="Prispôsobiť šírke">Fit</button>
+  <button id="zIn" title="Priblížiť">+</button>
+  <label class="chk" title="Všetky boxy sa roztiahnu tak, aby bolo každé pravidlo na jednom riadku"><input type="checkbox" id="chkWide"> široké boxy</label>
+  <label class="chk"><input type="checkbox" id="chkWrap"> zalamovať riadky</label>
+  <span class="sep"></span>
+  <label class="chk" title="Pri hľadaní / filtri podľa typu skryje nezhodné pravidlá a chainy (zostane cesta k zhode)"><input type="checkbox" id="chkHide"> skryť nezhodné</label>
+  <label class="chk" title="Čiary vedú medzerami medzi boxami, nie pod nimi"><input type="checkbox" id="chkRoute" checked> čiary obchádzajú boxy</label>
+  <span class="sep"></span>
+  <span class="dimtxt">počítadlá</span>
+  <div class="seg" id="cnt" role="group" aria-label="Filter podľa počítadiel paketov">
+    <button data-m="" class="on" title="Všetky pravidlá">všetky</button>
+    <button data-m="nz" title="Len pravidlá s nenulovým počítadlom paketov">≠ 0</button>
+    <button data-m="z" title="Len pravidlá s nulovým počítadlom (nepoužité)">= 0</button>
+  </div>
+  <label class="chk" id="autoLbl">⟳ auto
+    <select id="auto" aria-label="Automatická obnova súboru zo servera">
+      <option value="0">vyp.</option><option value="1">1 s</option><option value="5">5 s</option>
+      <option value="10">10 s</option><option value="30">30 s</option>
+    </select>
+  </label>
+  <span class="sep"></span>
+  <input type="search" id="q" placeholder="Hľadať (IP, port, comment…)">
+  <button id="btnOpen">Otvoriť súbor…</button>
+  <button id="btnReload" title="Znova načítať súbor zo servera">⟳</button>
+  <input type="file" id="file" hidden>
+  <span id="src"></span>
+</div>
+<div id="legend"></div>
+<div id="viewport">
+  <div id="empty">
+    <p><b>Zatiaľ nič nie je načítané.</b></p>
+    <p>Presuň sem súbor z <code>iptables-save</code>, vlož text (Ctrl+V) alebo použi „Otvoriť súbor…“.<br>
+    Server automaticky načíta <code>/data/iptables.rules</code>, ak existuje.</p>
+  </div>
+  <div id="stage"><div id="canvas"></div></div>
+</div>
+<script src="parser.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
