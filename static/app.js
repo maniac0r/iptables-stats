@@ -21,7 +21,7 @@ const fmt = n => n >= 1e9 ? (n / 1e9).toFixed(1) + 'G' : n >= 1e6 ? (n / 1e6).to
 const isHidden = el => el.classList.contains('hide');
 
 /* ---------- načítanie ---------- */
-let source = null, lastText = '', refreshTimer = null, refreshing = false, cmode = '', FORMAT = 'iptables';
+let source = null, lastText = '', refreshTimer = null, refreshing = false, cmode = '', FORMAT = 'iptables', focusMode = false;
 const darkMq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : { matches: true };
 if (darkMq.addEventListener) darkMq.addEventListener('change', () => DATA && drawEdges());
 
@@ -73,6 +73,27 @@ function load(text, label, src = 'local') {
 }
 
 /* rovnaká štruktúra pravidiel -> aktualizuj len počítadlá (bez prekreslenia a zmeny rozloženia) */
+function updateChips(n) {
+  const el = boxes[n] && boxes[n].querySelector('.chips');
+  if (el) el.innerHTML = chipsHtml(DATA[cur].chains[n]);
+}
+function refreshActivity(flash) {
+  if (!DATA) return;
+  for (const n of DATA[cur].order) updateChips(n);
+  drawEdges(flash);
+}
+/* zhodný obsah súboru = od poslednej obnovy nepribudli žiadne pakety */
+function resetDeltas() {
+  let any = false;
+  for (const tb of Object.values(DATA)) for (const c of Object.values(tb.chains)) for (const r of c.rules) if (r.delta) { r.delta = 0; any = true; }
+  if (!any) return;
+  for (const n in boxes) boxes[n].querySelectorAll('.rule').forEach((row, i) => {
+    const r = DATA[cur].chains[n].rules[i], el = row.querySelector('.cnt');
+    if (el && r.counters) el.title = cntTitle(r.counters, 0);
+  });
+  refreshActivity(false);
+}
+
 function updateCounters(nd) {
   for (const tn of Object.keys(nd)) {
     for (const n of nd[tn].order) {
@@ -81,6 +102,7 @@ function updateCounters(nd) {
       nc.rules.forEach((nr, i) => {
         const old = oc.rules[i];
         const delta = (nr.counters && old.counters) ? nr.counters.pkts - old.counters.pkts : 0;
+        old.delta = delta > 0 ? delta : 0;
         old.counters = nr.counters;
         if (tn !== cur || !nr.counters) return;
         const row = boxes[n] && boxes[n].querySelector(`.rule[data-i="${i}"]`);
@@ -93,6 +115,7 @@ function updateCounters(nd) {
     }
   }
   if (cmode) applyFilters();   // pravidlá mohli prejsť medzi "nulové" a "nenulové"
+  refreshActivity(true);       // chipy + zvýraznenie čiar s aktivitou
 }
 
 async function loadFromServer(auto = false) {
@@ -105,8 +128,9 @@ async function loadFromServer(auto = false) {
     const when = r.headers.get('X-Rules-Mtime');
     const label = (r.headers.get('X-Rules-File') || 'server') + (when ? ' · ' + when : '') +
       ' · načítané ' + new Date().toLocaleTimeString('sk-SK');
-    if (auto && DATA && source === 'server') {
-      if (text !== lastText) {
+    if (DATA && source === 'server') {
+      if (text === lastText) resetDeltas();
+      else {
         lastText = text;
         const nd = parseRuleset(text);
         if (sigOf(nd) === sigOf(DATA)) updateCounters(nd);
@@ -170,9 +194,21 @@ function ruleHtml(r) {
 }
 
 function chipsHtml(c) {
-  const n = {};
-  for (const r of c.rules) n[r.kind] = (n[r.kind] || 0) + 1;
-  return Object.keys(n).map(k => `<span class="chip k-${k}" title="${k}">${n[k]}</span>`).join('');
+  const g = {};
+  for (const r of c.rules) {
+    const e = g[r.kind] || (g[r.kind] = { n: 0, hits: 0, d: 0, has: false });
+    e.n++;
+    if (r.counters) { e.has = true; e.hits += r.counters.pkts; }
+    e.d += r.delta || 0;
+  }
+  return Object.keys(g).map(k => {
+    const e = g[k];
+    let txt = String(e.n);
+    if (e.has) txt += ` · ${fmt(e.hits)}`;
+    if (e.d > 0) txt += ` · <b>+${fmt(e.d)}</b>`;
+    const tip = `${e.n}× ${k}` + (e.has ? ` · ${e.hits} paketov celkom` : '') + (e.d > 0 ? ` · +${e.d} od poslednej obnovy` : '');
+    return `<span class="chip k-${k}" title="${tip}">${txt}</span>`;
+  }).join('');
 }
 
 function setModes(name) {
@@ -215,7 +251,14 @@ function render() {
     boxes[name] = box;
 
     const head = box.querySelector('.chead');
-    const toggle = () => { st.collapsed[name] = !st.collapsed[name]; box.classList.toggle('collapsed', !!st.collapsed[name]); relayout(); };
+    const toggle = () => {
+      if (focusMode) { focusOn(name); return; }
+      const collapsing = !st.collapsed[name];
+      st.collapsed[name] = collapsing;
+      if (collapsing) for (const d of descendants(name)) st.collapsed[d] = true;   // zbalí sa aj podstrom
+      applyCollapsed();
+      relayout();
+    };
     head.onclick = toggle;
     head.onkeydown = e => { if (e.target === head && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(); } };
     box.querySelector('.bw').onclick = e => { e.stopPropagation(); st.wide[name] = !st.wide[name]; setModes(name); relayout(); };
@@ -235,8 +278,43 @@ function render() {
       row.addEventListener('mouseleave', () => hot(e => e.dataset.from === name || e.dataset.to === name));
     });
     setModes(name);
+    box.classList.toggle('focus', focusMode && st.focus === name);
   }
   applyFilters();   // volá aj relayout()
+}
+
+/* chainy, do ktorých sa dá dostať z `name` (potomkovia) */
+function descendants(name) {
+  const t = DATA[cur], out = new Set(), todo = [name];
+  while (todo.length) {
+    const n = todo.pop();
+    for (const r of t.chains[n].rules) for (const x of r.jumpTos) if (x !== name && !out.has(x)) { out.add(x); todo.push(x); }
+  }
+  return out;
+}
+/* chainy, z ktorých sa dá dostať do `name` (rodičia) */
+function ancestors(name) {
+  const t = DATA[cur], out = new Set(), todo = [name];
+  while (todo.length) {
+    const n = todo.pop();
+    for (const e of t.chains[n].incoming) if (e.from !== name && !out.has(e.from)) { out.add(e.from); todo.push(e.from); }
+  }
+  return out;
+}
+function applyCollapsed() {
+  const st = S();
+  for (const n in boxes) boxes[n].classList.toggle('collapsed', !!st.collapsed[n]);
+}
+function focusOn(name) {
+  const st = S();
+  const keep = new Set([name, ...descendants(name), ...ancestors(name)]);
+  st.collapsed = {};
+  for (const n of DATA[cur].order) if (!keep.has(n)) st.collapsed[n] = true;
+  st.focus = name;
+  applyCollapsed();
+  for (const n in boxes) boxes[n].classList.toggle('focus', n === name);
+  relayout();
+  if (boxes[name].scrollIntoView) boxes[name].scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function hot(pred) {
@@ -251,10 +329,12 @@ function hot(pred) {
 }
 
 /* y stredu pravidla v rámci boxu; null = pravidlo je skryté filtrom */
+const hm = box => ((box.firstElementChild && box.firstElementChild.offsetHeight) || HEAD) / 2 + 1;
+
 function rowY(chain, idx) {
   const box = boxes[chain];
   if (!box || isHidden(box)) return null;
-  if (box.classList.contains('collapsed')) return HEAD / 2 + 1;
+  if (box.classList.contains('collapsed')) return hm(box);
   const row = box.querySelector(`.rule[data-i="${idx}"]`);
   if (!row || isHidden(row)) return null;
   return row.offsetTop + row.offsetHeight / 2;
@@ -305,7 +385,7 @@ function relayout() {
     for (const n of sorted) {
       const box = boxes[n];
       let y = cursor;
-      if (isFinite(key[n])) y = Math.max(cursor, key[n] - HEAD / 2);
+      if (isFinite(key[n])) y = Math.max(cursor, key[n] - hm(box));
       box.style.left = info.colX[ci] + 'px';
       box.style.top = y + 'px';
       top[n] = y;
@@ -361,7 +441,7 @@ function freeLane(c1, c2, yd, laneUse) {
   return Math.max(a + 2, Math.min(b - 2, y + ((n % 7) - 3) * step));
 }
 
-function drawEdges() {
+function drawEdges(flash = false) {
   const t = DATA[cur];
   const svg = $('#edges');
   svg.innerHTML = '';
@@ -384,7 +464,7 @@ function drawEdges() {
       const ry = rowY(name, r.idx);
       if (isHidden(tb) || ry === null) continue;
       const x1 = sb.offsetLeft + sb.offsetWidth, y1 = sb.offsetTop + ry;
-      const x2 = tb.offsetLeft, y2 = tb.offsetTop + HEAD / 2 + 1;
+      const x2 = tb.offsetLeft, y2 = tb.offsetTop + hm(tb);
       const s = info.colOf[name], tc = info.colOf[jt];
       let d;
       if (route && tc > s) {
@@ -402,7 +482,10 @@ function drawEdges() {
       }
       const col = colorOf[jt];
       const g = document.createElementNS(SVGNS, 'g');
-      g.setAttribute('class', 'edge');
+      let cls = 'edge';
+      if ((r.delta || 0) > 0) cls += ' act' + (flash ? ' flash' : '');
+      if (!sb.classList.contains('collapsed') && S().rule[name + '#' + r.idx]) cls += ' sel';
+      g.setAttribute('class', cls);
       g.dataset.from = name; g.dataset.to = jt; g.dataset.idx = r.idx;
       const p = document.createElementNS(SVGNS, 'path');
       p.setAttribute('d', d); p.setAttribute('fill', 'none'); p.setAttribute('stroke', col); p.setAttribute('stroke-width', 1.6);
@@ -470,8 +553,10 @@ function applyFilters() {
 function setAll(v) {
   const st = S();
   st.collapsed = {};
+  st.focus = null;
   if (v) for (const n of DATA[cur].order) st.collapsed[n] = true;
-  for (const n in boxes) boxes[n].classList.toggle('collapsed', !!st.collapsed[n]);
+  applyCollapsed();
+  for (const n in boxes) boxes[n].classList.remove('focus');
   relayout();
 }
 
@@ -481,6 +566,14 @@ function refreshModes() { if (!DATA) return; for (const n in boxes) setModes(n);
 buildLegend();
 $('#btnCollapse').onclick = () => DATA && setAll(true);
 $('#btnExpand').onclick = () => DATA && setAll(false);
+$('#btnFocus').onclick = () => {
+  focusMode = !focusMode;
+  $('#btnFocus').classList.toggle('on', focusMode);
+  $('#btnFocus').setAttribute('aria-pressed', String(focusMode));
+  if (!DATA) return;
+  const f = focusMode ? S().focus : null;
+  for (const n in boxes) boxes[n].classList.toggle('focus', n === f);
+};
 $('#zIn').onclick = () => setZoom(zoom * 1.2);
 $('#zOut').onclick = () => setZoom(zoom / 1.2);
 $('#zFit').onclick = () => size.w && setZoom(($('#viewport').clientWidth - 20) / size.w);
